@@ -1,2 +1,349 @@
 # -Babygriffendor-.GitHub.io
-Website
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Platformer - Super big gamer game</title>
+    <style>
+        body { margin: 0; background: #0a0a0a; color: white; font-family: 'Segoe UI', sans-serif; overflow: hidden; display: flex; flex-direction: column; align-items: center; }
+        canvas { background: #111; border: 5px solid #333; box-shadow: 0 0 30px #000; margin-top: 15px; }
+        .ui { width: 800px; display: flex; justify-content: space-between; padding: 15px; font-weight: bold; background: #222; border-bottom: 3px solid #444; }
+        .p1 { color: #00fbff; } .p2 { color: #ff0077; }
+        #reset { background: #444; color: white; border: none; padding: 5px 15px; cursor: pointer; border-radius: 4px; }
+        #reset:hover { background: #666; }
+    </style>
+</head>
+<body>
+    <div class="ui">
+        <span class="p1" id="p1_ui">P1: WASD</span>
+        <span id="lvl">MENU</span>
+        <span class="p2" id="p2_ui">P2: ARROWS</span>
+        <button id="reset" onclick="goMenu()">MENU</button>
+    </div>
+    <canvas id="g"></canvas>
+    <script>
+        const canvas = document.getElementById('g');
+        const ctx = canvas.getContext('2d');
+        canvas.width = 800; canvas.height = 550;
+        
+        let curLvl = 0;
+        let gameState = "START"; // START, CONTROLS, COLOR_SELECT, PLAYING
+        let playersNeeded = 2;
+        const gravity = 0.55;
+        const keys = {};
+        let particles = [];
+        let globalTimer = 0;
+
+        // COLOR SELECTION VARIABLES
+        const colorPalette = ['#00fbff', '#ff0077', '#00ff44', '#ffff00', '#ffffff', '#ff3300'];
+        let colorSelIndex = 0;
+        let pickingPlayer = 1; // 1 or 2
+
+        class Particle {
+            constructor(x, y, color, size=3, lifeDec=0.03) {
+                this.x = x; this.y = y;
+                this.vx = (Math.random() - 0.5) * 2;
+                this.vy = (Math.random() - 0.5) * 2;
+                this.life = 1.0; this.color = color;
+                this.size = size; this.lifeDec = lifeDec;
+            }
+            update() { this.x += this.vx; this.y += this.vy; this.life -= this.lifeDec; }
+            draw() { ctx.globalAlpha = this.life; ctx.fillStyle = this.color; ctx.fillRect(this.x, this.y, this.size, this.size); ctx.globalAlpha = 1; }
+        }
+
+        class BadGuy {
+            constructor(x, y, w=20, h=20, color='#ffaa00', health=1) {
+                this.x = x; this.y = y; this.w = w; this.h = h;
+                this.color = color; this.vx = 0; this.vy = 0;
+                this.dead = false; this.health = health;
+                this.speed = 1.8;
+            }
+            update(lv, p1, p2) {
+                if (this.dead) return;
+                let target = null;
+                if (p1.active && p2.active) {
+                    let d1 = Math.abs(p1.x - this.x);
+                    let d2 = Math.abs(p2.x - this.x);
+                    target = d1 < d2 ? p1 : p2;
+                } else { target = p1.active ? p1 : p2; }
+                if (target) {
+                    if (this.x < target.x) this.vx = this.speed;
+                    else if (this.x > target.x) this.vx = -this.speed;
+                }
+                this.vy += gravity; this.x += this.vx; this.coll(lv.plats, 'x');
+                this.y += this.vy; this.coll(lv.plats, 'y');
+                if (this.y > canvas.height) this.dead = true;
+            }
+            coll(plats, axis) {
+                plats.forEach(p => {
+                    let spd = p.freq || 0.02;
+                    let px = p.move ? p.x + Math.sin(globalTimer * spd) * p.dist : p.x;
+                    if (this.x < px + p.w && this.x + this.w > px && this.y < p.y + p.h && this.y + this.h > p.y) {
+                        if (axis === 'x') { this.x -= this.vx; this.vx *= -1; }
+                        else { if (this.vy > 0) { this.y = p.y - this.h; this.vy = 0; } }
+                    }
+                });
+            }
+            draw() { if(!this.dead) { ctx.fillStyle = this.color; ctx.fillRect(this.x, this.y, this.w, this.h); } }
+        }
+
+        class Player {
+            constructor(x, y, color, controls) {
+                this.x = x; this.y = y; this.w = 18; this.h = 18;
+                this.color = color; this.ctrl = controls;
+                this.vx = 0; this.vy = 0; this.onG = false; this.done = false;
+                this.spawn = {x, y}; this.active = true;
+                this.coyoteFrames = 0; this.tpCooldown = 0;
+            }
+            update(lv) {
+                if(!this.active) return;
+                if (this.tpCooldown > 0) this.tpCooldown--;
+                if (this.onG) { this.coyoteFrames = (curLvl === 16) ? 12 : 0; } 
+                else if (this.coyoteFrames > 0) {
+                    this.coyoteFrames--;
+                    if (curLvl === 16) particles.push(new Particle(this.x, this.y, this.color, 18, 0.1));
+                }
+                this.onG = false; 
+                if (keys[this.ctrl.l]) this.vx = -4.5; else if (keys[this.ctrl.r]) this.vx = 4.5; else this.vx *= 0.8;
+                this.vy += gravity; this.x += this.vx; this.coll(lv.plats, 'x');
+                this.y += this.vy; this.coll(lv.plats, 'y');
+                if (keys[this.ctrl.u] && (this.onG || this.coyoteFrames > 0)) { this.vy = -12; this.onG = false; this.coyoteFrames = 0; }
+                lv.haz.forEach(h => { if(this.hits(h)) this.die(); });
+                if(lv.enemies) lv.enemies.forEach(e => {
+                    if(!e.dead && this.hits(e)) {
+                        if(this.vy > 0 && (this.y + this.h/2) < e.y) { e.health--; this.vy = -12; if(e.health <= 0) e.dead = true; } 
+                        else { this.die(); }
+                    }
+                });
+                if(lv.bouncers) lv.bouncers.forEach(b => { if(this.hits(b)) { this.vy = b.p || -25; this.onG = false; } });
+                if(lv.tps && this.tpCooldown === 0) {
+                    lv.tps.forEach(tp => { if(this.hits(tp)) { this.x = tp.destX; this.y = tp.destY; this.tpCooldown = 30; } });
+                }
+                if(this.y > canvas.height) this.die();
+                let enemiesDead = lv.enemies ? lv.enemies.every(e => e.dead) : true;
+                this.done = enemiesDead && this.hits(lv.goal);
+            }
+            coll(plats, axis) {
+                plats.forEach(p => {
+                    let spd = p.freq || 0.02;
+                    let px = p.move ? p.x + Math.sin(globalTimer * spd) * p.dist : p.x;
+                    let prevPx = p.move ? p.x + Math.sin((globalTimer - 1) * spd) * p.dist : p.x;
+                    if (this.x < px + p.w && this.x + this.w > px && this.y < p.y + p.h && this.y + this.h > p.y) {
+                        if (axis === 'x') { this.x -= this.vx; this.vx = 0; }
+                        else { 
+                            if (this.vy > 0) { this.y = p.y - this.h; this.onG = true; if(p.move) this.x += (px - prevPx); } 
+                            else { this.y = p.y + p.h; } 
+                            this.vy = 0; 
+                        }
+                    }
+                });
+            }
+            hits(o) { return this.x < o.x + o.w && this.x + this.w > o.x && this.y < o.y + o.h && this.y + this.h > o.y; }
+            die() { this.x = this.spawn.x; this.y = this.spawn.y; this.vx = 0; this.vy = 0; this.done = false; this.tpCooldown = 0; }
+            draw() { if(this.active) { ctx.fillStyle = this.color; ctx.fillRect(this.x, this.y, this.w, this.h); } }
+        }
+
+        function loadLevels() {
+            return [
+                { plats: [{x:0,y:500,w:800,h:50}], haz: [], goal: {x:750,y:450,w:40,h:50} },
+                { plats: [{x:0,y:500,w:200,h:50},{x:300,y:400,w:200,h:20},{x:600,y:300,w:200,h:20}], haz: [], goal: {x:750,y:250,w:40,h:50} },
+                { plats: [{x:0,y:500,w:100,h:50},{x:700,y:500,w:100,h:50},{x:220,y:400,w:50,h:10},{x:360,y:350,w:50,h:10},{x:500,y:300,w:50,h:10},{x:640,y:250,w:50,h:10}], haz: [{x:100,y:530,w:600,h:20}], goal: {x:750,y:450,w:40,h:50} },
+                { plats: [{x:0,y:500,w:100,h:50},{x:200,y:450,w:50,h:10},{x:400,y:450,w:50,h:10},{x:600,y:450,w:50,h:10},{x:700,y:400,w:100,h:50}], haz: [], goal: {x:750,y:350,w:40,h:50} },
+                { plats: [{x:0,y:500,w:100,h:50},{x:120,y:420,w:30,h:10},{x:240,y:440,w:30,h:10},{x:360,y:460,w:30,h:10},{x:500,y:420,w:30,h:10},{x:640,y:440,w:30,h:10},{x:740,y:380,w:60,h:170},{x:640,y:280,w:30,h:10},{x:500,y:200,w:30,h:10},{x:350,y:220,w:30,h:10},{x:200,y:160,w:30,h:10},{x:60,y:100,w:30,h:10},{x:250,y:70,w:30,h:10},{x:440,y:60,w:100,h:20}], haz: [{x:100,y:540,w:640,h:10}], goal: {x:470,y:10,w:40,h:50} },
+                { plats: [{x:0,y:450,w:100,h:100},{x:100,y:520,w:700,h:30},{x:700,y:220,w:100,h:330},{x:700,y:0,w:100,h:150},{x:700,y:210,w:100,h:10},{x:220,y:450,w:50,h:10},{x:360,y:400,w:50,h:10},{x:500,y:350,w:50,h:10},{x:630,y:300,w:70,h:10} ], haz: [{x:120,y:500,w:560,h:20}], goal: {x:730,y:160,w:40,h:50} },
+                { plats: [{x:0,y:500,w:100,h:50},{x:150,y:400,w:100,h:20},{x:300,y:300,w:100,h:20},{x:450,y:200,w:100,h:20},{x:600,y:100,w:200,h:20}], haz: [], goal: {x:750,y:50,w:40,h:50} },
+                { plats: [{x:0,y:500,w:800,h:50}], haz: [{x:200,y:0,w:30,h:450},{x:400,y:100,w:30,h:450},{x:600,y:0,w:30,h:450}], bouncers: [{x:350, y:490, w:60, h:10, p: -32}], goal: {x:750,y:450,w:40,h:50} },
+                { plats: [{x:0,y:500,w:200,h:50},{x:200,y:400,w:100,h:10},{x:400,y:400,w:100,h:10},{x:600,y:500,w:200,h:50}], haz: [{x:200,y:530,w:400,h:20}], goal: {x:750,y:450,w:40,h:50} },
+                { plats: [{x:0,y:500,w:800,h:50}, {x:200,y:400,w:100,h:10}, {x:450,y:300,w:100,h:10}], haz: [], goal: {x:750,y:450,w:40,h:50} },
+                { plats: [{x:0,y:500,w:100,h:50},{x:150,y:450,w:20,h:20},{x:300,y:400,w:20,h:20},{x:450,y:350,w:20,h:20},{x:600,y:300,w:20,h:20},{x:750,y:250,w:50,h:50}], haz: [], goal: {x:760,y:200,w:30,h:50} },
+                { plats: [{x:0,y:500,w:800,h:20},{x:100,y:400,w:600,h:20},{x:200,y:300,w:400,h:20}, {x:35,y:478,w:10,h:2}], haz: [{x:0,y:480,w:800,h:5}], goal: {x:380,y:250,w:40,h:50} },
+                { plats: [{x:0,y:500,w:100,h:50},{x:700,y:100,w:100,h:50},{x:200,y:450,w:100,h:10},{x:500,y:150,w:100,h:10}], haz: [{x:100,y:200,w:500,h:20},{x:200,y:400,w:500,h:20}], tps: [{x:50,y:470,w:30,h:30,destX:750,destY:50}], goal: {x:750,y:50,w:40,h:50} },
+                { plats: [{x:0,y:500,w:800,h:50},{x:100,y:350,w:200,h:20},{x:500,y:350,w:200,h:20}], haz: [], enemies: [new BadGuy(200,100), new BadGuy(400,100), new BadGuy(600,100), new BadGuy(300,400), new BadGuy(500,400)], goal: {x:380,y:450,w:40,h:50} },
+                { plats: [{x:0,y:500,w:100,h:20},{x:200,y:400,w:100,h:20},{x:0,y:300,w:100,h:20},{x:200,y:200,w:100,h:20},{x:0,y:100,w:100,h:20},{x:400,y:100,w:400,h:20}], haz: [], goal: {x:750,y:50,w:40,h:50} },
+                { plats: [{x:0,y:500,w:150,h:20},{x:325,y:500,w:150,h:20},{x:650,y:500,w:150,h:20}], haz: [{x:150,y:510,w:175,h:20},{x:475,y:510,w:175,h:20}], goal: {x:700,y:450,w:40,h:50} },
+                { 
+                  plats: [
+                    {x:0,y:500,w:100,h:50},
+                    {x:350,y:205,w:150,h:20, move: true, dist: 350, freq: 0.01}, 
+                    {x:450,y:350,w:120,h:15, move: true, dist: 140},
+                    {x:150,y:420,w:120,h:15, move: true, dist: 100},
+                    {x:650,y:150,w:150,h:400}
+                  ], 
+                  haz: [{x:100,y:540,w:550,h:10}], 
+                  goal: {x:760,y:100,w:30,h:50} 
+                },
+                { plats: [{x:0,y:500,w:800,h:50}], haz: [{x:100,y:450,w:20,h:50},{x:200,y:450,w:20,h:50},{x:300,y:450,w:20,h:50},{x:400,y:450,w:20,h:50},{x:500,y:450,w:20,h:50},{x:600,y:450,w:20,h:50}], goal: {x:750,y:450,w:40,h:50} },
+                { plats: [{x:0,y:500,w:100,h:50},{x:175,y:450,w:80,h:15},{x:350,y:400,w:100,h:20},{x:525,y:350,w:100,h:20},{x:700,y:300,w:100,h:50}], haz: [{x:100,y:520,w:700,h:30}], goal: {x:750,y:250,w:40,h:50} },
+                { plats: [{x:0,y:500,w:800,h:50}, {x:300,y:380,w:200,h:20}], haz: [{x:50,y:530,w:700,h:20}], enemies: [new BadGuy(350, 290, 100, 90, '#666', 3)], goal: {x:750,y:450,w:40,h:50} }
+            ];
+        }
+
+        let levels = loadLevels();
+        const p1 = new Player(20, 420, '#00fbff', {u:'KeyW', l:'KeyA', r:'KeyD'});
+        const p2 = new Player(50, 420, '#ff0077', {u:'ArrowUp', l:'ArrowLeft', r:'ArrowRight'});
+
+        window.goMenu = function() {
+            gameState = "START";
+            curLvl = 0;
+            levels = loadLevels();
+            p1.die(); p2.die();
+            particles = [];
+            colorSelIndex = 0; pickingPlayer = 1;
+            document.getElementById('p1_ui').style.display = 'block';
+            document.getElementById('p2_ui').style.display = 'block';
+        }
+
+        window.onkeydown = e => {
+            keys[e.code] = true;
+            if(gameState === "START") {
+                if(e.key === "1") { 
+                    gameState = "CONTROLS"; 
+                }
+                if(e.key === "2") { 
+                    playersNeeded = 2; p1.active = true; p2.active = true; 
+                    gameState = "COLOR_SELECT"; pickingPlayer = 1; colorSelIndex = 0;
+                    document.getElementById('p1_ui').style.display = 'block'; 
+                    document.getElementById('p2_ui').style.display = 'block';
+                }
+            } else if (gameState === "CONTROLS") {
+                if(e.key === "1") { // WASD CHOSEN
+                    playersNeeded = 1; p1.active = true; p2.active = false; 
+                    gameState = "COLOR_SELECT"; pickingPlayer = 1; colorSelIndex = 0;
+                    document.getElementById('p1_ui').style.display = 'block';
+                    document.getElementById('p2_ui').style.display = 'none';
+                }
+                if(e.key === "2") { // ARROWS CHOSEN
+                    playersNeeded = 1; p1.active = false; p2.active = true; 
+                    gameState = "COLOR_SELECT"; pickingPlayer = 1; colorSelIndex = 0;
+                    document.getElementById('p1_ui').style.display = 'none';
+                    document.getElementById('p2_ui').style.display = 'block';
+                }
+            } else if (gameState === "COLOR_SELECT") {
+                if(e.code === 'ArrowRight' || e.code === 'KeyD') colorSelIndex = (colorSelIndex + 1) % colorPalette.length;
+                if(e.code === 'ArrowLeft' || e.code === 'KeyA') colorSelIndex = (colorSelIndex - 1 + colorPalette.length) % colorPalette.length;
+                
+                if(e.code === 'Enter' || e.code === 'Space') {
+                    let chosen = colorPalette[colorSelIndex];
+                    
+                    if (playersNeeded === 2) {
+                        if (pickingPlayer === 1) {
+                            p1.color = chosen;
+                            pickingPlayer = 2;
+                            colorSelIndex = 0;
+                        } else {
+                            if (chosen !== p1.color) {
+                                p2.color = chosen;
+                                gameState = "PLAYING";
+                            }
+                        }
+                    } else {
+                        // 1 Player Mode
+                        if (p1.active) p1.color = chosen;
+                        else p2.color = chosen;
+                        gameState = "PLAYING";
+                    }
+                }
+            }
+        };
+        window.onkeyup = e => keys[e.code] = false;
+
+        function loop() {
+            globalTimer++;
+            ctx.clearRect(0,0,canvas.width,canvas.height);
+            
+            if(gameState === "START") {
+                document.getElementById('lvl').innerText = "MENU";
+                ctx.save();
+                ctx.fillStyle = "#00fbff";
+                ctx.shadowColor = "#ff0077";
+                ctx.shadowBlur = 10;
+                ctx.font = "bold 50px Arial"; 
+                ctx.textAlign = "center";
+                ctx.fillText("SUPER BIG GAMER GAME", canvas.width/2, canvas.height/2 - 60);
+                ctx.restore();
+                ctx.fillStyle = "white"; ctx.font = "22px Arial"; ctx.textAlign = "center";
+                ctx.fillText("PRESS '1' FOR 1 PLAYER", canvas.width/2, canvas.height/2 + 30);
+                ctx.fillText("PRESS '2' FOR 2 PLAYERS", canvas.width/2, canvas.height/2 + 80);
+
+            } else if (gameState === "CONTROLS") {
+                document.getElementById('lvl').innerText = "SELECT CONTROLS";
+                ctx.fillStyle = "white"; ctx.font = "26px Arial"; ctx.textAlign = "center";
+                ctx.fillText("CHOOSE YOUR CONTROLLER", canvas.width/2, canvas.height/2 - 50);
+                ctx.fillStyle = "#00fbff"; ctx.fillText("PRESS '1' FOR WASD", canvas.width/2, canvas.height/2 + 20);
+                ctx.fillStyle = "#ff0077"; ctx.fillText("PRESS '2' FOR ARROW KEYS", canvas.width/2, canvas.height/2 + 70);
+
+            } else if (gameState === "COLOR_SELECT") {
+                document.getElementById('lvl').innerText = "SELECT COLOR";
+                ctx.textAlign = "center";
+                
+                let title = (playersNeeded === 2) ? `PLAYER ${pickingPlayer} CHOOSE COLOR` : "CHOOSE YOUR COLOR";
+                ctx.fillStyle = "white"; ctx.font = "30px Arial";
+                ctx.fillText(title, canvas.width/2, 150);
+                ctx.font = "16px Arial"; ctx.fillText("(Left/Right to Select, Space/Enter to Confirm)", canvas.width/2, 180);
+
+                let startX = 150;
+                let gap = 90;
+                
+                colorPalette.forEach((c, i) => {
+                    let x = startX + i * gap;
+                    let y = 250;
+                    let size = 60;
+                    
+                    // Check if taken
+                    let isTaken = (playersNeeded === 2 && pickingPlayer === 2 && p1.color === c);
+                    
+                    if(i === colorSelIndex) {
+                        ctx.strokeStyle = "white"; ctx.lineWidth = 5;
+                        ctx.strokeRect(x - 5, y - 5, size + 10, size + 10);
+                    }
+                    
+                    ctx.fillStyle = c;
+                    ctx.globalAlpha = isTaken ? 0.2 : 1.0;
+                    ctx.fillRect(x, y, size, size);
+                    ctx.globalAlpha = 1.0;
+
+                    if (isTaken) {
+                        ctx.strokeStyle = "red"; ctx.lineWidth = 4;
+                        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x+size, y+size); ctx.stroke();
+                        ctx.beginPath(); ctx.moveTo(x+size, y); ctx.lineTo(x, y+size); ctx.stroke();
+                    }
+                });
+
+            } else {
+                // GAME PLAY
+                const l = levels[curLvl];
+                document.getElementById('lvl').innerText = `LEVEL ${curLvl + 1} / 20`;
+                l.plats.forEach(p => {
+                    ctx.fillStyle = p.move ? '#555' : '#444';
+                    let spd = p.freq || 0.02;
+                    let px = p.move ? p.x + Math.sin(globalTimer * spd) * p.dist : p.x;
+                    ctx.fillRect(px, p.y, p.w, p.h);
+                });
+                ctx.fillStyle = '#ff3300'; l.haz.forEach(h => ctx.fillRect(h.x, h.y, h.w, h.h));
+                ctx.fillStyle = '#00ff44'; if(l.bouncers) l.bouncers.forEach(b => ctx.fillRect(b.x, b.y, b.w, b.h));
+                ctx.fillStyle = '#aa00ff'; if(l.tps) l.tps.forEach(t => ctx.fillRect(t.x, t.y, t.w, t.h));
+                
+                particles.forEach((p, i) => { p.update(); p.draw(); if(p.life <= 0) particles.splice(i, 1); });
+                
+                if(l.enemies) {
+                    l.enemies.forEach(e => { e.update(l, p1, p2); e.draw(); });
+                    if(l.enemies.every(e => e.dead)) { ctx.fillStyle = '#ffff00'; ctx.fillRect(l.goal.x, l.goal.y, l.goal.w, l.goal.h); }
+                    else { ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.fillRect(l.goal.x, l.goal.y, l.goal.w, l.goal.h); }
+                } else {
+                    ctx.fillStyle = '#ffff00'; ctx.fillRect(l.goal.x, l.goal.y, l.goal.w, l.goal.h);
+                }
+                
+                p1.update(l); p2.update(l); p1.draw(); p2.draw();
+                
+                let allDone = (playersNeeded === 1) ? (p1.active ? p1.done : p2.done) : (p1.done && p2.done);
+                if (allDone) { 
+                    curLvl++; 
+                    if (curLvl >= levels.length) { curLvl = 0; gameState = "START"; }
+                    p1.die(); p2.die(); 
+                }
+            }
+            requestAnimationFrame(loop);
+        }
+        loop();
+    </script>
+</body>
+</html>
